@@ -1,0 +1,907 @@
+# Data Handling Patterns
+
+## Overview
+This rule defines the architectural patterns for data retrieval, mutations, and validation in our Next.js application. Following these patterns ensures type-safe, validated, and performant data operations.
+
+---
+
+## Core Principles
+
+### 1. Data Retrieval via Server Components
+- **ALWAYS** perform data fetching in React Server Components (RSC)
+- **NEVER** fetch data directly in Client Components
+- Server Components provide better performance, SEO, and security
+
+### 2. Data Mutations via Server Actions
+- **ALWAYS** use Server Actions for database writes (INSERT, UPDATE, DELETE)
+- **NEVER** expose database operations via API routes when Server Actions are suitable
+- Server Actions provide type-safety and automatic security
+
+### 3. Validation with Zod
+- **ALWAYS** validate data using Zod schemas
+- **ALWAYS** define Zod schemas before implementing any data operations
+- **ALWAYS** validate at the server action boundary
+
+### 4. TypeScript Types for Server Actions
+- **ALWAYS** define explicit TypeScript types for server action parameters
+- **NEVER** use `FormData` as the type for server action parameters
+- **ALWAYS** parse FormData into typed objects before validation
+
+---
+
+## Pattern 1: Data Retrieval in Server Components
+
+### ✅ Correct Pattern
+
+```typescript
+// app/products/page.tsx
+import { db } from '@/db';
+import { products } from '@/db/schema';
+
+// Server Component - data fetching happens on the server
+export default async function ProductsPage() {
+  // Direct database query in Server Component
+  const allProducts = await db.select().from(products);
+
+  return (
+    <div>
+      <h1>Products</h1>
+      {allProducts.map((product) => (
+        <div key={product.id}>{product.name}</div>
+      ))}
+    </div>
+  );
+}
+```
+
+### ❌ Incorrect Pattern
+
+```typescript
+// ❌ DON'T DO THIS
+'use client';
+
+import { useEffect, useState } from 'react';
+
+export default function ProductsPage() {
+  const [products, setProducts] = useState([]);
+
+  useEffect(() => {
+    // ❌ Fetching data in client component
+    fetch('/api/products')
+      .then(res => res.json())
+      .then(data => setProducts(data));
+  }, []);
+
+  return <div>{/* ... */}</div>;
+}
+```
+
+### Advanced Pattern: Separate Data Fetching Functions
+
+```typescript
+// lib/data/products.ts
+import { db } from '@/db';
+import { products } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+
+export async function getProducts() {
+  return await db.select().from(products);
+}
+
+export async function getProductById(id: number) {
+  const result = await db
+    .select()
+    .from(products)
+    .where(eq(products.id, id))
+    .limit(1);
+  
+  return result[0] ?? null;
+}
+
+// app/products/page.tsx
+import { getProducts } from '@/lib/data/products';
+
+export default async function ProductsPage() {
+  const allProducts = await getProducts();
+  
+  return <div>{/* ... */}</div>;
+}
+```
+
+---
+
+## Pattern 2: Data Mutations with Server Actions
+
+### Step 1: Define Zod Schema
+
+```typescript
+// lib/validations/product.ts
+import { z } from 'zod';
+
+export const createProductSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(100),
+  price: z.number().positive('Price must be positive'),
+  description: z.string().optional(),
+  categoryId: z.number().int().positive(),
+});
+
+export const updateProductSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string().min(1).max(100).optional(),
+  price: z.number().positive().optional(),
+  description: z.string().optional(),
+  categoryId: z.number().int().positive().optional(),
+});
+
+export const deleteProductSchema = z.object({
+  id: z.number().int().positive(),
+});
+
+// Export TypeScript types from Zod schemas
+export type CreateProductInput = z.infer<typeof createProductSchema>;
+export type UpdateProductInput = z.infer<typeof updateProductSchema>;
+export type DeleteProductInput = z.infer<typeof deleteProductSchema>;
+```
+
+### Step 2: Implement Server Actions
+
+```typescript
+// actions/product-actions.ts
+'use server';
+
+import { db } from '@/db';
+import { products } from '@/db/schema';
+import { 
+  createProductSchema, 
+  updateProductSchema, 
+  deleteProductSchema,
+  type CreateProductInput,
+  type UpdateProductInput,
+  type DeleteProductInput,
+} from '@/lib/validations/product';
+import { eq } from 'drizzle-orm';
+import { revalidatePath } from 'next/cache';
+
+// Return type for consistent error handling
+type ActionResponse<T> = 
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+export async function createProduct(
+  input: CreateProductInput
+): Promise<ActionResponse<{ id: number }>> {
+  try {
+    // Validate input with Zod
+    const validatedData = createProductSchema.parse(input);
+
+    // Perform database insert
+    const [newProduct] = await db
+      .insert(products)
+      .values(validatedData)
+      .returning({ id: products.id });
+
+    // Revalidate relevant paths
+    revalidatePath('/products');
+
+    return { success: true, data: { id: newProduct.id } };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { 
+        success: false, 
+        error: error.errors[0].message 
+      };
+    }
+    
+    return { 
+      success: false, 
+      error: 'Failed to create product' 
+    };
+  }
+}
+
+export async function updateProduct(
+  input: UpdateProductInput
+): Promise<ActionResponse<void>> {
+  try {
+    const validatedData = updateProductSchema.parse(input);
+    const { id, ...updates } = validatedData;
+
+    await db
+      .update(products)
+      .set(updates)
+      .where(eq(products.id, id));
+
+    revalidatePath('/products');
+    revalidatePath(`/products/${id}`);
+
+    return { success: true, data: undefined };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { 
+        success: false, 
+        error: error.errors[0].message 
+      };
+    }
+    
+    return { 
+      success: false, 
+      error: 'Failed to update product' 
+    };
+  }
+}
+
+export async function deleteProduct(
+  input: DeleteProductInput
+): Promise<ActionResponse<void>> {
+  try {
+    const validatedData = deleteProductSchema.parse(input);
+
+    await db
+      .delete(products)
+      .where(eq(products.id, validatedData.id));
+
+    revalidatePath('/products');
+
+    return { success: true, data: undefined };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { 
+        success: false, 
+        error: error.errors[0].message 
+      };
+    }
+    
+    return { 
+      success: false, 
+      error: 'Failed to delete product' 
+    };
+  }
+}
+```
+
+### Step 3: Use Server Actions in Client Components
+
+```typescript
+// components/product-form.tsx
+'use client';
+
+import { useState } from 'react';
+import { createProduct } from '@/actions/product-actions';
+import type { CreateProductInput } from '@/lib/validations/product';
+
+export function ProductForm() {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setError(null);
+
+    const formData = new FormData(e.currentTarget);
+    
+    // ✅ Convert FormData to typed object
+    const input: CreateProductInput = {
+      name: formData.get('name') as string,
+      price: Number(formData.get('price')),
+      description: formData.get('description') as string,
+      categoryId: Number(formData.get('categoryId')),
+    };
+
+    // Call server action with typed input
+    const result = await createProduct(input);
+
+    if (!result.success) {
+      setError(result.error);
+      setIsSubmitting(false);
+      return;
+    }
+
+    // Handle success
+    window.location.href = '/products';
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      {error && <div className="error">{error}</div>}
+      
+      <input name="name" type="text" required />
+      <input name="price" type="number" step="0.01" required />
+      <textarea name="description" />
+      <input name="categoryId" type="number" required />
+      
+      <button type="submit" disabled={isSubmitting}>
+        {isSubmitting ? 'Creating...' : 'Create Product'}
+      </button>
+    </form>
+  );
+}
+```
+
+---
+
+## Pattern 3: Handling FormData Properly
+
+### ❌ NEVER Do This
+
+```typescript
+// ❌ DON'T DO THIS
+'use server';
+
+export async function createProduct(formData: FormData) {
+  // ❌ No TypeScript type safety
+  // ❌ No validation
+  const name = formData.get('name');
+  const price = formData.get('price');
+  
+  await db.insert(products).values({ name, price });
+}
+```
+
+### ✅ ALWAYS Do This
+
+```typescript
+// ✅ Option 1: Accept typed object directly
+'use server';
+
+export async function createProduct(input: CreateProductInput) {
+  const validatedData = createProductSchema.parse(input);
+  // ... rest of implementation
+}
+
+// ✅ Option 2: If you must accept FormData, parse it immediately
+'use server';
+
+export async function createProductFromForm(formData: FormData) {
+  // Immediately convert to typed object
+  const input: CreateProductInput = {
+    name: formData.get('name') as string,
+    price: Number(formData.get('price')),
+    description: formData.get('description') as string,
+    categoryId: Number(formData.get('categoryId')),
+  };
+  
+  // Validate with Zod
+  const validatedData = createProductSchema.parse(input);
+  
+  // ... rest of implementation
+}
+```
+
+---
+
+## Pattern 4: Complex Validations
+
+### Nested Objects
+
+```typescript
+import { z } from 'zod';
+
+export const addressSchema = z.object({
+  street: z.string().min(1),
+  city: z.string().min(1),
+  state: z.string().length(2),
+  zipCode: z.string().regex(/^\d{5}(-\d{4})?$/),
+});
+
+export const createUserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1),
+  address: addressSchema,
+  phoneNumbers: z.array(z.string().regex(/^\+?[\d\s-()]+$/)).min(1),
+});
+
+export type CreateUserInput = z.infer<typeof createUserSchema>;
+```
+
+### Conditional Validation
+
+```typescript
+import { z } from 'zod';
+
+export const createOrderSchema = z.object({
+  customerId: z.number().int().positive(),
+  items: z.array(z.object({
+    productId: z.number().int().positive(),
+    quantity: z.number().int().positive(),
+  })).min(1),
+  shippingMethod: z.enum(['standard', 'express', 'overnight']),
+  // Conditional: require tracking number only for express/overnight
+  trackingNumber: z.string().optional(),
+}).refine(
+  (data) => {
+    if (data.shippingMethod !== 'standard') {
+      return data.trackingNumber !== undefined;
+    }
+    return true;
+  },
+  {
+    message: 'Tracking number required for express/overnight shipping',
+    path: ['trackingNumber'],
+  }
+);
+```
+
+### Custom Validation with Database Checks
+
+```typescript
+'use server';
+
+import { z } from 'zod';
+
+export const createOrderSchema = z.object({
+  customerId: z.number().int().positive(),
+  productId: z.number().int().positive(),
+  quantity: z.number().int().positive(),
+});
+
+export async function createOrder(input: z.infer<typeof createOrderSchema>) {
+  // First: Basic Zod validation
+  const validatedData = createOrderSchema.parse(input);
+
+  // Second: Custom business logic validation
+  const product = await db
+    .select()
+    .from(products)
+    .where(eq(products.id, validatedData.productId))
+    .limit(1);
+
+  if (!product[0]) {
+    return { success: false, error: 'Product not found' };
+  }
+
+  if (product[0].stock < validatedData.quantity) {
+    return { success: false, error: 'Insufficient stock' };
+  }
+
+  // Proceed with creation
+  const [order] = await db.insert(orders).values(validatedData).returning();
+
+  return { success: true, data: order };
+}
+```
+
+---
+
+## Pattern 5: Optimistic Updates
+
+```typescript
+'use client';
+
+import { useOptimistic } from 'react';
+import { deleteProduct } from '@/actions/product-actions';
+
+export function ProductList({ initialProducts }: { initialProducts: Product[] }) {
+  const [optimisticProducts, setOptimisticProducts] = useOptimistic(
+    initialProducts,
+    (state, deletedId: number) => state.filter(p => p.id !== deletedId)
+  );
+
+  async function handleDelete(id: number) {
+    // Optimistically update UI
+    setOptimisticProducts(id);
+
+    // Call server action with typed input
+    const result = await deleteProduct({ id });
+
+    if (!result.success) {
+      // Handle error - the UI will revert automatically
+      alert(result.error);
+    }
+  }
+
+  return (
+    <div>
+      {optimisticProducts.map((product) => (
+        <div key={product.id}>
+          {product.name}
+          <button onClick={() => handleDelete(product.id)}>Delete</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+## Pattern 6: Authorization in Server Actions
+
+```typescript
+'use server';
+
+import { auth } from '@clerk/nextjs/server';
+
+export async function updateProduct(input: UpdateProductInput) {
+  // Always check authentication/authorization first
+  const { userId } = await auth();
+  
+  if (!userId) {
+    return { success: false, error: 'Unauthorized' };
+  }
+
+  // Validate input
+  const validatedData = updateProductSchema.parse(input);
+
+  // Check ownership or permissions
+  const product = await db
+    .select()
+    .from(products)
+    .where(eq(products.id, validatedData.id))
+    .limit(1);
+
+  if (!product[0]) {
+    return { success: false, error: 'Product not found' };
+  }
+
+  if (product[0].ownerId !== userId) {
+    return { success: false, error: 'Forbidden' };
+  }
+
+  // Proceed with update
+  await db.update(products).set(validatedData).where(eq(products.id, validatedData.id));
+
+  revalidatePath(`/products/${validatedData.id}`);
+
+  return { success: true, data: undefined };
+}
+```
+
+---
+
+## Best Practices Summary
+
+### DO's ✅
+- ✅ Fetch data in Server Components
+- ✅ Use Server Actions for all mutations (INSERT, UPDATE, DELETE)
+- ✅ Define Zod schemas for all data operations
+- ✅ Use explicit TypeScript types for server action parameters
+- ✅ Validate all inputs at the server action boundary
+- ✅ Return consistent response shapes (success/error pattern)
+- ✅ Use `revalidatePath()` after mutations
+- ✅ Handle errors gracefully with user-friendly messages
+- ✅ Check authentication/authorization in server actions
+- ✅ Export TypeScript types from Zod schemas using `z.infer`
+
+### DON'Ts ❌
+- ❌ Don't fetch data in Client Components
+- ❌ Don't use API routes for simple CRUD operations (use Server Actions instead)
+- ❌ Don't skip validation
+- ❌ Don't use `FormData` as the type for server actions
+- ❌ Don't trust client-side validation alone
+- ❌ Don't expose sensitive data in server actions
+- ❌ Don't forget to revalidate cache after mutations
+- ❌ Don't throw errors without proper error handling
+- ❌ Don't perform mutations without authentication checks
+
+---
+
+## File Organization
+
+```
+src/
+├── actions/
+│   ├── product-actions.ts    # Server actions for products
+│   ├── user-actions.ts        # Server actions for users
+│   └── order-actions.ts       # Server actions for orders
+├── lib/
+│   ├── validations/
+│   │   ├── product.ts         # Zod schemas for products
+│   │   ├── user.ts            # Zod schemas for users
+│   │   └── order.ts           # Zod schemas for orders
+│   └── data/
+│       ├── products.ts        # Data fetching functions for products
+│       ├── users.ts           # Data fetching functions for users
+│       └── orders.ts          # Data fetching functions for orders
+├── app/
+│   ├── products/
+│   │   ├── page.tsx           # Server Component (data fetching)
+│   │   └── [id]/
+│   │       └── page.tsx       # Server Component (data fetching)
+│   └── ...
+└── components/
+    ├── product-form.tsx       # Client Component (uses server actions)
+    └── ...
+```
+
+---
+
+## Quick Reference
+
+| Operation | Location | Pattern |
+|-----------|----------|---------|
+| Data Fetching | Server Component | Direct DB query or data function |
+| INSERT | Server Action | Typed input + Zod validation |
+| UPDATE | Server Action | Typed input + Zod validation |
+| DELETE | Server Action | Typed input + Zod validation |
+| Validation | Server Action | Zod schema `.parse()` |
+| Type Safety | Everywhere | `z.infer<typeof schema>` |
+| Error Handling | Server Action | Try/catch with typed responses |
+| Cache Invalidation | Server Action | `revalidatePath()` |
+
+---
+
+## Common Pitfalls
+
+### Pitfall 1: Forgetting to Validate
+```typescript
+// ❌ BAD
+export async function createProduct(input: CreateProductInput) {
+  await db.insert(products).values(input); // No validation!
+}
+
+// ✅ GOOD
+export async function createProduct(input: CreateProductInput) {
+  const validatedData = createProductSchema.parse(input);
+  await db.insert(products).values(validatedData);
+}
+```
+
+### Pitfall 2: Not Revalidating Cache
+```typescript
+// ❌ BAD
+export async function deleteProduct(input: DeleteProductInput) {
+  await db.delete(products).where(eq(products.id, input.id));
+  // Forgot to revalidate!
+}
+
+// ✅ GOOD
+export async function deleteProduct(input: DeleteProductInput) {
+  await db.delete(products).where(eq(products.id, input.id));
+  revalidatePath('/products'); // ✅ Revalidate cache
+}
+```
+
+### Pitfall 3: Inconsistent Error Handling
+```typescript
+// ❌ BAD - throwing errors
+export async function createProduct(input: CreateProductInput) {
+  const data = createProductSchema.parse(input); // Throws on error
+  await db.insert(products).values(data);
+}
+
+// ✅ GOOD - returning error states
+export async function createProduct(input: CreateProductInput) {
+  try {
+    const data = createProductSchema.parse(input);
+    await db.insert(products).values(data);
+    return { success: true, data: undefined };
+  } catch (error) {
+    return { success: false, error: 'Failed to create product' };
+  }
+}
+```
+
+---
+
+## Complete Example: User Profile Management
+
+### 1. Schema Definition
+```typescript
+// lib/validations/profile.ts
+import { z } from 'zod';
+
+export const updateProfileSchema = z.object({
+  userId: z.string().min(1),
+  displayName: z.string().min(1).max(50),
+  bio: z.string().max(500).optional(),
+  avatarUrl: z.string().url().optional(),
+  location: z.string().max(100).optional(),
+});
+
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+```
+
+### 2. Server Action
+```typescript
+// actions/profile-actions.ts
+'use server';
+
+import { auth } from '@clerk/nextjs/server';
+import { db } from '@/db';
+import { profiles } from '@/db/schema';
+import { updateProfileSchema, type UpdateProfileInput } from '@/lib/validations/profile';
+import { eq } from 'drizzle-orm';
+import { revalidatePath } from 'next/cache';
+
+export async function updateProfile(input: UpdateProfileInput) {
+  try {
+    const { userId: authUserId } = await auth();
+    
+    if (!authUserId) {
+      return { success: false, error: 'Unauthorized' };
+    }
+
+    const validatedData = updateProfileSchema.parse(input);
+
+    if (authUserId !== validatedData.userId) {
+      return { success: false, error: 'Forbidden' };
+    }
+
+    await db
+      .update(profiles)
+      .set({
+        displayName: validatedData.displayName,
+        bio: validatedData.bio,
+        avatarUrl: validatedData.avatarUrl,
+        location: validatedData.location,
+        updatedAt: new Date(),
+      })
+      .where(eq(profiles.userId, validatedData.userId));
+
+    revalidatePath(`/profile/${validatedData.userId}`);
+
+    return { success: true, data: undefined };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { success: false, error: error.errors[0].message };
+    }
+    return { success: false, error: 'Failed to update profile' };
+  }
+}
+```
+
+### 3. Data Fetching Function
+```typescript
+// lib/data/profiles.ts
+import { db } from '@/db';
+import { profiles } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+
+export async function getProfileByUserId(userId: string) {
+  const result = await db
+    .select()
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+    .limit(1);
+
+  return result[0] ?? null;
+}
+```
+
+### 4. Server Component (Page)
+```typescript
+// app/profile/[userId]/page.tsx
+import { getProfileByUserId } from '@/lib/data/profiles';
+import { ProfileForm } from '@/components/profile-form';
+
+export default async function ProfilePage({ 
+  params 
+}: { 
+  params: { userId: string } 
+}) {
+  const profile = await getProfileByUserId(params.userId);
+
+  if (!profile) {
+    return <div>Profile not found</div>;
+  }
+
+  return (
+    <div>
+      <h1>Edit Profile</h1>
+      <ProfileForm profile={profile} />
+    </div>
+  );
+}
+```
+
+### 5. Client Component (Form)
+```typescript
+// components/profile-form.tsx
+'use client';
+
+import { useState } from 'react';
+import { updateProfile } from '@/actions/profile-actions';
+import type { UpdateProfileInput } from '@/lib/validations/profile';
+
+interface ProfileFormProps {
+  profile: {
+    userId: string;
+    displayName: string;
+    bio?: string | null;
+    avatarUrl?: string | null;
+    location?: string | null;
+  };
+}
+
+export function ProfileForm({ profile }: ProfileFormProps) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setError(null);
+
+    const formData = new FormData(e.currentTarget);
+    
+    const input: UpdateProfileInput = {
+      userId: profile.userId,
+      displayName: formData.get('displayName') as string,
+      bio: formData.get('bio') as string || undefined,
+      avatarUrl: formData.get('avatarUrl') as string || undefined,
+      location: formData.get('location') as string || undefined,
+    };
+
+    const result = await updateProfile(input);
+
+    if (!result.success) {
+      setError(result.error);
+      setIsSubmitting(false);
+      return;
+    }
+
+    // Success!
+    alert('Profile updated successfully');
+    setIsSubmitting(false);
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      {error && <div className="error">{error}</div>}
+      
+      <div>
+        <label htmlFor="displayName">Display Name</label>
+        <input
+          id="displayName"
+          name="displayName"
+          type="text"
+          defaultValue={profile.displayName}
+          required
+        />
+      </div>
+
+      <div>
+        <label htmlFor="bio">Bio</label>
+        <textarea
+          id="bio"
+          name="bio"
+          defaultValue={profile.bio ?? ''}
+        />
+      </div>
+
+      <div>
+        <label htmlFor="avatarUrl">Avatar URL</label>
+        <input
+          id="avatarUrl"
+          name="avatarUrl"
+          type="url"
+          defaultValue={profile.avatarUrl ?? ''}
+        />
+      </div>
+
+      <div>
+        <label htmlFor="location">Location</label>
+        <input
+          id="location"
+          name="location"
+          type="text"
+          defaultValue={profile.location ?? ''}
+        />
+      </div>
+
+      <button type="submit" disabled={isSubmitting}>
+        {isSubmitting ? 'Saving...' : 'Save Profile'}
+      </button>
+    </form>
+  );
+}
+```
+
+---
+
+## Conclusion
+
+Following these patterns ensures:
+- **Type Safety**: TypeScript types catch errors at compile time
+- **Data Validation**: Zod validates data at runtime
+- **Security**: Server-side validation prevents malicious inputs
+- **Performance**: Server Components reduce client-side JavaScript
+- **Maintainability**: Consistent patterns make code easier to understand
+- **Developer Experience**: Clear errors and IntelliSense support
+
+Always remember:
+1. **Fetch** → Server Components
+2. **Mutate** → Server Actions
+3. **Validate** → Zod Schemas
+4. **Type** → TypeScript (no FormData types!)

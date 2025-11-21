@@ -1,0 +1,373 @@
+---
+description: "Clerk authentication and data access security rules"
+---
+
+# Clerk Authentication & Data Access Control
+
+## 🔐 CRITICAL: Authentication & Data Access Control
+
+### Authentication is ALWAYS handled by Clerk
+- **NEVER** implement custom authentication logic
+- **NEVER** create custom login/signup flows
+- **NEVER** manually manage sessions or tokens
+- **ALL** authentication must go through Clerk's built-in methods
+
+### Data Access Security - ZERO TOLERANCE POLICY
+**CRITICAL RULE: Users can ONLY access their own data. NEVER allow access to data that doesn't belong to them.**
+
+#### Server Components & Server Actions
+```typescript
+// ✅ CORRECT - Always get userId from Clerk and filter by it
+import { auth } from "@clerk/nextjs/server";
+
+async function getMyDecks() {
+  const { userId } = await auth();
+  
+  if (!userId) {
+    throw new Error("Unauthorized");
+  }
+  
+  // ALWAYS filter by userId
+  const decks = await db
+    .select()
+    .from(decksTable)
+    .where(eq(decksTable.userId, userId));
+  
+  return decks;
+}
+
+// ✅ CORRECT - Always verify ownership before updates/deletes
+async function updateDeck(deckId: number, data: any) {
+  const { userId } = await auth();
+  
+  if (!userId) {
+    throw new Error("Unauthorized");
+  }
+  
+  // First verify the deck belongs to the user
+  const deck = await db
+    .select()
+    .from(decksTable)
+    .where(eq(decksTable.id, deckId))
+    .limit(1);
+  
+  if (!deck[0] || deck[0].userId !== userId) {
+    throw new Error("Forbidden: You don't own this deck");
+  }
+  
+  // Now it's safe to update
+  await db
+    .update(decksTable)
+    .set(data)
+    .where(eq(decksTable.id, deckId));
+}
+
+// ❌ WRONG - No userId check, exposes all users' data
+async function getAllDecks() {
+  return await db.select().from(decksTable); // NEVER DO THIS
+}
+
+// ❌ WRONG - No ownership verification before update
+async function updateDeckDangerous(deckId: number, data: any) {
+  await db.update(decksTable).set(data).where(eq(decksTable.id, deckId));
+  // User could modify decks they don't own!
+}
+```
+
+#### API Routes
+```typescript
+// ✅ CORRECT - API route with userId verification
+import { auth } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
+
+export async function GET(request: NextRequest) {
+  const { userId } = await auth();
+  
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  
+  const decks = await db
+    .select()
+    .from(decksTable)
+    .where(eq(decksTable.userId, userId));
+  
+  return NextResponse.json({ decks });
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const { userId } = await auth();
+  
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  
+  const deckId = parseInt(params.id);
+  
+  // Verify ownership before deletion
+  const deck = await db
+    .select()
+    .from(decksTable)
+    .where(eq(decksTable.id, deckId))
+    .limit(1);
+  
+  if (!deck[0] || deck[0].userId !== userId) {
+    return NextResponse.json(
+      { error: "Forbidden: Not your deck" },
+      { status: 403 }
+    );
+  }
+  
+  await db.delete(decksTable).where(eq(decksTable.id, deckId));
+  
+  return NextResponse.json({ success: true });
+}
+```
+
+#### Client Components
+```typescript
+// ✅ CORRECT - Client component using Clerk hooks
+"use client";
+
+import { useUser } from "@clerk/nextjs";
+
+export function UserProfile() {
+  const { isLoaded, isSignedIn, user } = useUser();
+  
+  if (!isLoaded) return <div>Loading...</div>;
+  if (!isSignedIn) return <div>Please sign in</div>;
+  
+  return <div>Welcome, {user.firstName}!</div>;
+}
+
+// ❌ WRONG - Never pass userId as a prop that could be manipulated
+export function DeckList({ userId }: { userId: string }) {
+  // User could manipulate this prop to see other users' decks!
+  // Instead, fetch userId from Clerk inside the component or server action
+}
+```
+
+### Database Schema Rules
+- **ALWAYS** include a `userId` field (from Clerk) in tables that contain user-specific data
+- Use `varchar({ length: 255 })` for Clerk user IDs
+- Set `userId` as `.notNull()` for user-owned resources
+
+```typescript
+// ✅ CORRECT Schema
+export const decksTable = pgTable("decks", {
+  id: integer().primaryKey().generatedAlwaysAsIdentity(),
+  userId: varchar({ length: 255 }).notNull(), // Clerk user ID
+  name: varchar({ length: 255 }).notNull(),
+  // ... other fields
+});
+```
+
+### Security Checklist for Every Database Query
+Before writing ANY database query that reads, updates, or deletes data:
+
+1. ✅ Have I retrieved the `userId` from Clerk using `auth()` or `useUser()`?
+2. ✅ Have I checked if the user is authenticated?
+3. ✅ Am I filtering the query by `userId`?
+4. ✅ For updates/deletes, have I verified the user owns the resource?
+5. ✅ Am I returning a 401/403 error if unauthorized?
+
+### Common Patterns
+
+#### Reading User's Data
+```typescript
+const { userId } = await auth();
+if (!userId) throw new Error("Unauthorized");
+
+const data = await db
+  .select()
+  .from(table)
+  .where(eq(table.userId, userId));
+```
+
+#### Creating User's Data
+```typescript
+const { userId } = await auth();
+if (!userId) throw new Error("Unauthorized");
+
+await db.insert(table).values({
+  userId, // ALWAYS set this
+  ...otherData,
+});
+```
+
+#### Updating User's Data
+```typescript
+const { userId } = await auth();
+if (!userId) throw new Error("Unauthorized");
+
+// Verify ownership first
+const existing = await db
+  .select()
+  .from(table)
+  .where(eq(table.id, resourceId))
+  .limit(1);
+
+if (!existing[0] || existing[0].userId !== userId) {
+  throw new Error("Forbidden");
+}
+
+// Now update
+await db
+  .update(table)
+  .set(data)
+  .where(eq(table.id, resourceId));
+```
+
+#### Deleting User's Data
+```typescript
+const { userId } = await auth();
+if (!userId) throw new Error("Unauthorized");
+
+// Use a WHERE clause that includes userId for safety
+await db
+  .delete(table)
+  .where(
+    and(
+      eq(table.id, resourceId),
+      eq(table.userId, userId)
+    )
+  );
+```
+
+#### Accessing Related Data
+```typescript
+// When accessing cards through decks, verify deck ownership
+const { userId } = await auth();
+if (!userId) throw new Error("Unauthorized");
+
+// Join with decksTable to ensure user owns the deck
+const cards = await db
+  .select()
+  .from(cardsTable)
+  .innerJoin(decksTable, eq(cardsTable.deckId, decksTable.id))
+  .where(
+    and(
+      eq(cardsTable.deckId, deckId),
+      eq(decksTable.userId, userId) // Ensure deck belongs to user
+    )
+  );
+```
+
+---
+
+## 🚫 NEVER DO THIS
+
+1. ❌ Query database without filtering by userId for user-specific data
+2. ❌ Update/delete records without verifying ownership
+3. ❌ Pass userId as a URL parameter or form input that users can manipulate
+4. ❌ Trust client-side data for userId (always get from Clerk server-side)
+5. ❌ Skip authentication checks in API routes
+6. ❌ Implement custom authentication instead of using Clerk
+7. ❌ Return all users' data in any API endpoint
+8. ❌ Use raw SQL that bypasses Drizzle ORM
+9. ❌ Create public endpoints that expose sensitive data
+10. ❌ Assume a user is authenticated without checking
+
+---
+
+## ✅ ALWAYS DO THIS
+
+1. ✅ Get userId from Clerk in every function that accesses user data
+2. ✅ Filter all queries by userId for user-specific tables
+3. ✅ Verify ownership before updates/deletes
+4. ✅ Return 401 for unauthenticated requests
+5. ✅ Return 403 for unauthorized access attempts
+6. ✅ Use Drizzle ORM for all database operations
+7. ✅ Use TypeScript for type safety
+8. ✅ Handle errors gracefully
+9. ✅ Test authentication flows thoroughly
+10. ✅ Follow the principle of least privilege
+
+---
+
+## 📚 Quick Reference
+
+### Get Authenticated User (Server)
+```typescript
+import { auth } from "@clerk/nextjs/server";
+const { userId } = await auth();
+```
+
+### Get Authenticated User (Client)
+```typescript
+"use client";
+import { useUser } from "@clerk/nextjs";
+const { user, isSignedIn } = useUser();
+```
+
+### Protect Server Component
+```typescript
+import { auth } from "@clerk/nextjs/server";
+
+export default async function ProtectedPage() {
+  const { userId } = await auth();
+  if (!userId) redirect("/sign-in");
+  // ... rest of component
+}
+```
+
+### Protect API Route
+```typescript
+import { auth } from "@clerk/nextjs/server";
+
+export async function GET() {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  // ... rest of handler
+}
+```
+
+### Middleware Configuration
+```typescript
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+
+const isProtectedRoute = createRouteMatcher([
+  '/dashboard(.*)',
+  '/api/decks(.*)',
+]);
+
+export default clerkMiddleware(async (auth, req) => {
+  if (isProtectedRoute(req)) {
+    await auth.protect();
+  }
+});
+```
+
+---
+
+## 🎯 Summary
+
+**The Golden Rule: Every database query for user-specific data MUST filter by the authenticated user's ID from Clerk. No exceptions.**
+
+When in doubt, ask yourself: "Could this code allow User A to see, modify, or delete User B's data?" If the answer is yes or maybe, you need to add more security checks.
+
+### Error Response Guide
+- **401 Unauthorized**: User is not authenticated (no valid session)
+- **403 Forbidden**: User is authenticated but trying to access resources they don't own
+- **404 Not Found**: Resource doesn't exist (or pretend it doesn't to avoid info leakage)
+
+### Environment Variables Required
+```bash
+# .env.local
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CLERK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+DATABASE_URL=postgresql://user:password@host:port/database
+```
+
+---
+
+## 📖 Additional Resources
+
+- [Clerk Next.js Documentation](https://clerk.com/docs/quickstarts/nextjs)
+- [Clerk Server SDK Reference](https://clerk.com/docs/references/nextjs/overview)
+- [Protecting Routes with Clerk](https://clerk.com/docs/guides/basic-rbac)

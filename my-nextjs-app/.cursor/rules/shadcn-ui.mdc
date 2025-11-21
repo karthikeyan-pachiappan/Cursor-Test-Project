@@ -1,0 +1,81 @@
+---
+alwaysApply: true
+---
+# shadcn UI Component Guidelines
+
+This project uses **shadcn UI** for all UI elements and components.
+
+## Setup and Installation
+
+### Initial Setup
+If shadcn UI is not initialized in the project, run:
+```bash
+npx shadcn@latest init
+```
+
+### Adding Components
+When a specific component is needed but not yet installed, use:
+```bash
+npx shadcn@latest add [component-name]
+```
+
+**Examples:**
+- Button: `npx shadcn@latest add button`
+- Card: `npx shadcn@latest add card`
+- Dialog: `npx shadcn@latest add dialog`
+- Input: `npx shadcn@latest add input`
+- Form: `npx shadcn@latest add form`
+
+## Component Usage Rules
+
+1. **Always use shadcn UI components** - Do not create custom UI components from scratch when shadcn UI provides an equivalent
+2. **Check if component exists** - Before using a component, verify it's installed in `components/ui/`
+3. **Install missing components** - If a component is missing, install it using the command above
+4. **Follow shadcn conventions** - Use the default component structure and naming from shadcn UI
+5. **Tailwind CSS** - shadcn UI components are built with Tailwind CSS; use Tailwind utilities for styling
+6. **TypeScript** - Always use TypeScript with proper typing for component props
+
+## Common Components
+
+Frequently used shadcn UI components:
+- `button` - Buttons with various styles
+- `input` - Form inputs
+- `card` - Content containers
+- `dialog` - Modal dialogs
+- `dropdown-menu` - Dropdown menus
+- `form` - Form components with validation
+- `table` - Data tables
+- `toast` - Toast notifications
+- `select` - Select dropdowns
+- `checkbox` - Checkboxes
+- `radio-group` - Radio buttons
+- `badge` - Status badges
+- `avatar` - User avatars
+- `tabs` - Tab navigation
+- `accordion` - Collapsible content
+
+## Component Import Pattern
+
+Import shadcn UI components from the `@/components/ui` directory:
+```typescript
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
+```
+
+## Best Practices
+
+1. **Composition over customization** - Compose existing components rather than heavily customizing them
+2. **Use variants** - Leverage built-in variants (e.g., button variants: default, destructive, outline, ghost)
+3. **Accessibility** - shadcn UI components are accessible by default; maintain this when customizing
+4. **Consistent styling** - Use the theme system and Tailwind utilities consistently
+5. **Don't modify component files** - Avoid editing files in `components/ui/` directly; extend them instead
+
+## When to Install New Components
+
+Install a new shadcn UI component when:
+- Building a new feature that requires it
+- Refactoring existing code to use shadcn UI
+- A user requests a specific UI element
+
+Always prefer shadcn UI components over custom implementations or third-party libraries for standard UI elements.

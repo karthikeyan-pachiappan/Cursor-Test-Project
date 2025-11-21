@@ -1,0 +1,86 @@
+---
+alwaysApply: true
+description: Next.js project structure and conventions
+---
+
+# Next.js Project Structure
+
+This is a Next.js 16 project using the App Router with TypeScript and Tailwind CSS.
+
+## Project Configuration
+
+- **Framework**: Next.js 16.0.3
+- **React**: 19.2.0
+- **TypeScript**: Version 5
+- **Styling**: Tailwind CSS v4
+- **UI Components**: shadcn UI (see [shadcn-ui.mdc](mdc:shadcn-ui.mdc))
+
+## Directory Structure
+
+```
+my-nextjs-app/
+├── src/
+│   └── app/                 # App Router directory
+│       ├── layout.tsx       # Root layout
+│       ├── page.tsx         # Home page
+│       └── globals.css      # Global styles
+├── public/                  # Static assets
+├── components/
+│   └── ui/                  # shadcn UI components (auto-generated)
+├── .cursor/
+│   └── rules/              # Cursor rules directory
+└── package.json
+```
+
+## File Naming Conventions
+
+- **Pages**: `page.tsx` in route directories
+- **Layouts**: `layout.tsx` in route directories
+- **Components**: PascalCase (e.g., `UserProfile.tsx`)
+- **Utilities**: camelCase (e.g., `formatDate.ts`)
+- **Types**: PascalCase with `.types.ts` suffix (e.g., `User.types.ts`)
+
+## Routing
+
+This project uses the **App Router** (not Pages Router):
+- All routes are defined in the `src/app` directory
+- Each route is a folder containing a `page.tsx` file
+- Layouts can be nested using `layout.tsx` files
+- Use Server Components by default; add `"use client"` only when needed
+
+## Component Guidelines
+
+1. **Server Components First** - Use React Server Components by default
+2. **Client Components** - Add `"use client"` directive only when using:
+   - State (useState, useReducer)
+   - Effects (useEffect, useLayoutEffect)
+   - Event handlers (onClick, onChange, etc.)
+   - Browser APIs
+   - Custom hooks
+
+3. **Component Location**:
+   - UI components: `components/ui/` (shadcn UI)
+   - Shared components: `components/`
+   - Page-specific components: in the same directory as the page
+
+## Styling
+
+- **Tailwind CSS v4** is configured
+- Use Tailwind utility classes for styling
+- Global styles in `src/app/globals.css`
+- shadcn UI components use Tailwind for theming
+
+## Best Practices
+
+1. **TypeScript** - Always use TypeScript with proper type definitions
+2. **File Organization** - Keep related files close together
+3. **Server vs Client** - Minimize client-side JavaScript; prefer Server Components
+4. **Import Aliases** - Use `@/` alias for imports from the root (e.g., `@/components/ui/button`)
+5. **Code Quality** - Follow ESLint rules configured in `eslint.config.mjs`
+
+## Scripts
+
+- `npm run dev` - Start development server
+- `npm run build` - Build for production
+- `npm start` - Start production server
+- `npm run lint` - Run ESLint
