@@ -1,5 +1,16 @@
 import { integer, pgTable, varchar, text, timestamp } from "drizzle-orm/pg-core";
 
+// Users table - synced from Clerk
+export const usersTable = pgTable("users", {
+  id: varchar({ length: 255 }).primaryKey(), // Clerk user ID
+  email: varchar({ length: 255 }).notNull(),
+  firstName: varchar({ length: 255 }),
+  lastName: varchar({ length: 255 }),
+  imageUrl: text(),
+  createdAt: timestamp().notNull().defaultNow(),
+  updatedAt: timestamp().notNull().defaultNow(),
+});
+
 // Decks table - each user can create multiple decks
 export const decksTable = pgTable("decks", {
   id: integer().primaryKey().generatedAlwaysAsIdentity(),
